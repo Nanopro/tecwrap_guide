@@ -1,12 +1,10 @@
-# import numpy as np
 import tecplot as tp, tecplot
 import numpy as np
 import os
 import subprocess
-import functools
 import psutil
 from typing import List, Tuple
-
+from collections import namedtuple
 
 class TecWrapper:
     def __init__(self, cwd=None):
@@ -14,15 +12,16 @@ class TecWrapper:
         if self.cwd is None:
             self.cwd = os.getcwd()
 
-        #if 'tex360.exe' in (p.name() for p in psutil.process_iter()):
-        
-        if os.environ.get('TEC360_PATH'):
-            self.proc = subprocess.Popen(
-                r'{path}/tec360.exe "{path}/startTecUtilServer.mcr"'.format(path = os.environ['TEC360_PATH']))
-        else:
-            raise EnvironmentError('Please, initialize TEC360_PATH env. variable with valid path to TecPlot360/bin directory.')
-            
-        tp.session.connect(timeout=20)
+        if 'tec360.exe' not in list(p.name() for p in psutil.process_iter()):
+            if os.environ.get('TEC360_PATH'):
+                self.proc = subprocess.Popen(
+                    r'{path}/tec360.exe "{path}/startTecUtilServer.mcr"'.format(path = os.environ['TEC360_PATH']))
+            else:
+                raise EnvironmentError('Please, initialize TEC360_PATH env. variable with valid path to TecPlot360/bin directory.')
+        try:
+            tp.session.connect(timeout=30)
+        except tp.exception.TecplotTimeoutError as error:
+            raise SystemError("TecPlot is launched but is not reachable. Please make sure you are listening on port 7600.")
 
     def change_cwd(self, new_cwd):
         self.cwd = new_cwd
@@ -63,6 +62,13 @@ class TecSession:
         self.close()
         if exc_val:
             raise
+    def show_contour(self, variable = 'X'):
+        self.plot.show_contour = True
+        self.plot.contour(0).variable = self.dataset.variable(variable)
+
+    def execute_equation(self, equation):
+        tp.data.operate.execute_equation(equation=equation)
+
 
     def setup_fake_plane(self):
         tp.data.operate.execute_equation(equation='{Z_NULL}=0')
@@ -76,7 +82,7 @@ class TecSession:
         :param tuple[float] origin: asdasd
         :param tuple[float] normal:aewe
         :param tuple[float] values:ew23
-        :param tuple[str] source:23ad
+        :param tp.constant.SliceSource source:23ad
         :return tuple[np.array] : 2a32
         '''
         extracted_slice = tecplot.data.extract.extract_slice(
@@ -84,7 +90,8 @@ class TecSession:
             normal=normal,
             source=source,
             dataset=self.dataset)
-        return (extracted_slice.values(var).as_numpy_array() for var in values)
+        nd = namedtuple('Slice', values)
+        return nd(**{var : extracted_slice.values(var).as_numpy_array() for var in values})
 
     def _get_slices(self, origins=((0, 0, 0), (0.5, 0, 0)), normal=(1, 0, 0), values=('Y', 'U'),
                     source=tp.constant.SliceSource.VolumeZones):
@@ -97,7 +104,8 @@ class TecSession:
                 dataset=self.dataset)
             for var in result.keys():
                 result[var].append(extracted_slice.values(var).as_numpy_array())
-        return (np.array(result[x]) for x in values)
+        nd = namedtuple('Slice', values)
+        return nd(**{x : np.array(result[x]) for x in values})
 
     def get_slice(self, origin=(0, 0, 0), normal=(1, 0, 0), values=('Y', 'U')):
         '''
@@ -211,20 +219,21 @@ class TecSession:
     def get_z_slices(self, cords, values=('Y', 'U')):
         return self.get_slices(origins=((0, 0, cord) for cord in cords), normal=(0, 0, 1), values=values)
 
-    def surface_intersection(self, origins, normals, values=('Y', 'U')):
+    def surface_intersection(self, surface_1, surface_2, values=('Y', 'U')):
         extracted_slice_1 = tecplot.data.extract.extract_slice(
-            origin=origins[0],
-            normal=normals[0],
+            origin=surface_1[0],
+            normal=surface_1[1],
             source=tp.constant.SliceSource.VolumeZones,
             dataset=self.dataset)
         self.frame.active_zones(extracted_slice_1)
         extracted_slice_2 = tecplot.data.extract.extract_slice(
-            origin=origins[1],
-            normal=normals[1],
+            origin=surface_2[0],
+            normal=surface_2[1],
             source=tp.constant.SliceSource.SurfaceZones,
             dataset=self.dataset)
         self.frame.active_zones(self.dataset.zones())
-        return (extracted_slice_2.values(var).as_numpy_array() for var in values)
+        nd = namedtuple('SurfaceIntersection', values)
+        return nd(**{var : extracted_slice_2.values(var).as_numpy_array() for var in values})
 
     def surfaces_intersection(self, surface_1, surfaces, values=('Y', 'U')):
         result = {x: [] for x in values}
@@ -243,7 +252,8 @@ class TecSession:
             for var in result.keys():
                 result[var].append(extracted_slice_2.values(var).as_numpy_array())
         self.frame.active_zones(self.dataset.zones())
-        return (np.array(result[x]) for x in values)
+        nd = namedtuple('SurfaceIntersection', values)
+        return nd(**{x:np.array(result[x]) for x in values})
 
     def get_values(self, values=('Y', 'U', 'RHO')):
         result = {x: [] for x in values}
